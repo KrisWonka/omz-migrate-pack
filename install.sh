@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 #  Oh My Zsh 主题 & 插件 一键迁移安装脚本
-#  源机器: kristin@linux  →  目标机器: macOS
+#  支持 macOS / Linux
 # ============================================================
 
 set -e
@@ -24,14 +24,18 @@ check_prerequisites() {
     info "检查运行环境..."
 
     if ! command -v git &>/dev/null; then
-        error "未检测到 git，请先安装: xcode-select --install"
+        error "未检测到 git，请先安装 git"
     fi
 
     if ! command -v zsh &>/dev/null; then
-        error "未检测到 zsh，macOS 应自带 zsh，请检查系统"
+        error "未检测到 zsh，请先安装 zsh"
     fi
 
-    success "环境检查通过 (git + zsh)"
+    if ! command -v curl &>/dev/null; then
+        error "未检测到 curl，请先安装 curl"
+    fi
+
+    success "环境检查通过 (git + zsh + curl)"
 }
 
 # ------ 安装 Oh My Zsh ------
@@ -92,49 +96,95 @@ install_plugins() {
 configure_zshrc() {
     local ZSHRC="$HOME/.zshrc"
     local BACKUP="$HOME/.zshrc.backup.$(date +%Y%m%d%H%M%S)"
+    local TEMP_ZSHRC
+    local HAS_ZSH_HOME=0
 
     if [ -f "$ZSHRC" ]; then
         cp "$ZSHRC" "$BACKUP"
         success "已备份原 .zshrc → $BACKUP"
+    else
+        touch "$ZSHRC"
     fi
 
     info "正在配置 .zshrc..."
 
-    # 替换主题
-    if grep -q '^ZSH_THEME=' "$ZSHRC" 2>/dev/null; then
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' 's/^ZSH_THEME=.*/ZSH_THEME="half-lifeclean"/' "$ZSHRC"
-        else
-            sed -i 's/^ZSH_THEME=.*/ZSH_THEME="half-lifeclean"/' "$ZSHRC"
-        fi
-        success "主题已设置为 half-lifeclean"
-    else
-        echo 'ZSH_THEME="half-lifeclean"' >> "$ZSHRC"
-        success "主题已追加到 .zshrc"
+    if grep -Eq '^[[:space:]]*(export[[:space:]]+)?ZSH=' "$ZSHRC"; then
+        HAS_ZSH_HOME=1
     fi
 
-    # 替换插件列表
-    if grep -q '^plugins=' "$ZSHRC" 2>/dev/null; then
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' '/^plugins=/,/)$/c\
-plugins=(git\
-\tzsh-autosuggestions\
-\tzsh-syntax-highlighting\
-)' "$ZSHRC"
-        else
-            sed -i '/^plugins=/,/)$/c\plugins=(git\n\tzsh-autosuggestions\n\tzsh-syntax-highlighting\n)' "$ZSHRC"
-        fi
-        success "插件列表已更新"
-    else
-        cat >> "$ZSHRC" <<'PLUGINS'
+    TEMP_ZSHRC="$(mktemp "${ZSHRC}.tmp.XXXXXX")"
 
-plugins=(git
-	zsh-autosuggestions
-	zsh-syntax-highlighting
-)
-PLUGINS
-        success "插件列表已追加到 .zshrc"
-    fi
+    # 移除旧的主题和插件配置，然后在 Oh My Zsh 加载前重新插入。
+    # 这样可以同时修复缺少 source、配置顺序错误和重复运行。
+    awk -v has_zsh_home="$HAS_ZSH_HOME" '
+        function print_omz_config() {
+            if (!has_zsh_home) {
+                print "export ZSH=\"$HOME/.oh-my-zsh\""
+            }
+            print "ZSH_THEME=\"half-lifeclean\""
+            print ""
+            print "plugins=("
+            print "  git"
+            print "  zsh-autosuggestions"
+            print "  zsh-syntax-highlighting"
+            print ")"
+            print ""
+        }
+
+        in_plugins {
+            if ($0 ~ /^[[:space:]]*\)[[:space:]]*(#.*)?$/) {
+                in_plugins = 0
+                skip_config_blank = 1
+            }
+            next
+        }
+
+        /^[[:space:]]*ZSH_THEME=/ {
+            skip_config_blank = 1
+            next
+        }
+
+        /^[[:space:]]*plugins=\(/ {
+            if ($0 !~ /\)[[:space:]]*(#.*)?$/) {
+                in_plugins = 1
+            }
+            skip_config_blank = 1
+            next
+        }
+
+        skip_config_blank && /^[[:space:]]*$/ {
+            next
+        }
+
+        /^[[:space:]]*(source|\.)[[:space:]]+.*oh-my-zsh\.sh/ {
+            if (!omz_loaded) {
+                print_omz_config()
+                print
+                omz_loaded = 1
+            }
+            next
+        }
+
+        {
+            skip_config_blank = 0
+            print
+        }
+
+        END {
+            if (!omz_loaded) {
+                if (NR > 0) {
+                    print ""
+                }
+                print_omz_config()
+                print "source \"$ZSH/oh-my-zsh.sh\""
+            }
+        }
+    ' "$ZSHRC" > "$TEMP_ZSHRC"
+
+    cat "$TEMP_ZSHRC" > "$ZSHRC"
+    rm -f "$TEMP_ZSHRC"
+
+    success "主题、插件与 Oh My Zsh 加载顺序已更新"
 }
 
 # ------ 主流程 ------
@@ -142,7 +192,7 @@ main() {
     echo ""
     echo -e "${CYAN}╔════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║  Oh My Zsh 主题 & 插件 迁移安装工具       ║${NC}"
-    echo -e "${CYAN}║  从 kristin@linux → macOS                  ║${NC}"
+    echo -e "${CYAN}║  支持 macOS 与 Linux                       ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════╝${NC}"
     echo ""
 
@@ -165,7 +215,7 @@ main() {
     echo -e "插件: ${CYAN}git${NC}, ${CYAN}zsh-autosuggestions${NC}, ${CYAN}zsh-syntax-highlighting${NC}"
     echo ""
     echo -e "${YELLOW}请执行以下命令使配置生效:${NC}"
-    echo -e "  ${GREEN}source ~/.zshrc${NC}"
+    echo -e "  ${GREEN}exec zsh -l${NC}"
     echo -e "  或重新打开终端"
     echo ""
 
@@ -175,4 +225,6 @@ main() {
     echo ""
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
