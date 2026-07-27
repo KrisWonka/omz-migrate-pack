@@ -122,31 +122,40 @@ install_themes() {
 }
 
 # ------ 安装插件 ------
+
+# 装一个插件仓库。已存在则尝试更新——更新失败（多为网络不通）只警告不中断，
+# 因为本地那份仍然可用；只有全新克隆失败才是真的装不上。
+install_plugin_repo() {
+    local name="$1"
+    local url="$2"
+    local dest="$OMZ_CUSTOM/plugins/$name"
+
+    if [ -d "$dest" ]; then
+        info "$name 已存在，尝试更新..."
+        if git -C "$dest" pull --quiet 2>/dev/null; then
+            success "$name 已更新"
+        else
+            warn "$name 更新失败（网络不通？），沿用本地已有版本"
+        fi
+        return 0
+    fi
+
+    info "克隆 $name..."
+    if git clone --depth 1 --quiet "$url" "$dest"; then
+        success "$name 就绪"
+    else
+        rm -rf "$dest"
+        error "$name 克隆失败，请检查网络后重试"
+    fi
+}
+
 install_plugins() {
-    local CUSTOM_PLUGINS="$OMZ_CUSTOM/plugins"
-    mkdir -p "$CUSTOM_PLUGINS"
+    mkdir -p "$OMZ_CUSTOM/plugins"
 
-    # zsh-autosuggestions
-    if [ -d "$CUSTOM_PLUGINS/zsh-autosuggestions" ]; then
-        warn "zsh-autosuggestions 已存在，正在更新..."
-        git -C "$CUSTOM_PLUGINS/zsh-autosuggestions" pull --quiet
-    else
-        info "克隆 zsh-autosuggestions..."
-        git clone https://github.com/zsh-users/zsh-autosuggestions.git \
-            "$CUSTOM_PLUGINS/zsh-autosuggestions"
-    fi
-    success "zsh-autosuggestions 就绪"
-
-    # zsh-syntax-highlighting
-    if [ -d "$CUSTOM_PLUGINS/zsh-syntax-highlighting" ]; then
-        warn "zsh-syntax-highlighting 已存在，正在更新..."
-        git -C "$CUSTOM_PLUGINS/zsh-syntax-highlighting" pull --quiet
-    else
-        info "克隆 zsh-syntax-highlighting..."
-        git clone https://github.com/zsh-users/zsh-syntax-highlighting.git \
-            "$CUSTOM_PLUGINS/zsh-syntax-highlighting"
-    fi
-    success "zsh-syntax-highlighting 就绪"
+    install_plugin_repo zsh-autosuggestions \
+        https://github.com/zsh-users/zsh-autosuggestions.git
+    install_plugin_repo zsh-syntax-highlighting \
+        https://github.com/zsh-users/zsh-syntax-highlighting.git
 }
 
 # ------ 配置 .zshrc ------
