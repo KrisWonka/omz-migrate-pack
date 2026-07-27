@@ -14,6 +14,12 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Oh My Zsh 主体目录（可能是系统级的 /etc/oh-my-zsh），由 install_omz 探测后填入。
+OMZ_ROOT=""
+# 主题与插件一律装到用户家目录：系统级安装的 $ZSH/custom 归 root 所有，
+# 普通用户写不进去，而 Oh My Zsh 支持 ZSH_CUSTOM 独立于 ZSH。
+OMZ_CUSTOM="$HOME/.oh-my-zsh/custom"
+
 info()    { echo -e "${CYAN}[INFO]${NC} $1"; }
 success() { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -38,21 +44,72 @@ check_prerequisites() {
     success "环境检查通过 (git + zsh + curl)"
 }
 
+# ------ 探测 Oh My Zsh 安装位置 ------
+
+# 读出 .zshrc 里已声明的 ZSH= 路径并展开 ~ 与 $HOME；没有则输出空串。
+declared_zsh_root() {
+    local ZSHRC="$HOME/.zshrc"
+    local value=""
+
+    [ -f "$ZSHRC" ] || return 0
+    if grep -Eq '^[[:space:]]*(export[[:space:]]+)?ZSH=' "$ZSHRC"; then
+        value="$(grep -E '^[[:space:]]*(export[[:space:]]+)?ZSH=' "$ZSHRC" \
+            | tail -n 1 \
+            | sed -E 's/^[[:space:]]*(export[[:space:]]+)?ZSH=//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//' \
+            | tr -d "\"'")"
+        value="${value/#\~/$HOME}"
+        value="${value//\$\{HOME\}/$HOME}"
+        value="${value//\$HOME/$HOME}"
+    fi
+
+    printf '%s' "$value"
+}
+
+# 定位 Oh My Zsh 主体目录：用户级优先，其次采纳 .zshrc 里声明的系统级安装
+# （Armbian / Orange Pi 装在 /etc/oh-my-zsh）。都没有则返回 1 表示尚未安装。
+# 判据是 oh-my-zsh.sh 是否存在 —— 光看目录会被只含 cache/ 的空壳骗过。
+resolve_omz_root() {
+    local declared
+
+    if [ -f "$HOME/.oh-my-zsh/oh-my-zsh.sh" ]; then
+        printf '%s' "$HOME/.oh-my-zsh"
+        return 0
+    fi
+
+    declared="$(declared_zsh_root)"
+    if [ -n "$declared" ] && [ -f "$declared/oh-my-zsh.sh" ]; then
+        printf '%s' "$declared"
+        return 0
+    fi
+
+    return 1
+}
+
 # ------ 安装 Oh My Zsh ------
 install_omz() {
-    if [ -d "$HOME/.oh-my-zsh" ]; then
-        success "Oh My Zsh 已安装，跳过"
+    if OMZ_ROOT="$(resolve_omz_root)"; then
+        success "检测到 Oh My Zsh: $OMZ_ROOT"
+        if [ "$OMZ_ROOT" != "$HOME/.oh-my-zsh" ]; then
+            info "这是系统级安装，主题和插件将装到 $OMZ_CUSTOM（无需 sudo）"
+        fi
     else
         info "正在安装 Oh My Zsh..."
+        # ~/.oh-my-zsh 可能是个残缺空壳（如 .zshrc 里的 ZSH_CACHE_DIR 造出来的
+        # cache/ 目录），官方安装器遇到已存在的目录会直接退出，先挪开。
+        if [ -d "$HOME/.oh-my-zsh" ]; then
+            local STALE="$HOME/.oh-my-zsh.incomplete.$(date +%Y%m%d%H%M%S)"
+            warn "~/.oh-my-zsh 已存在但缺少 oh-my-zsh.sh，移至 $STALE"
+            mv "$HOME/.oh-my-zsh" "$STALE"
+        fi
         RUNZSH=no KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-        success "Oh My Zsh 安装完成"
+        OMZ_ROOT="$HOME/.oh-my-zsh"
+        success "Oh My Zsh 安装完成 → $OMZ_ROOT"
     fi
 }
 
 # ------ 安装主题 ------
 install_themes() {
-    local ZSH_HOME="$HOME/.oh-my-zsh"
-    local CUSTOM_THEMES="$ZSH_HOME/custom/themes"
+    local CUSTOM_THEMES="$OMZ_CUSTOM/themes"
     mkdir -p "$CUSTOM_THEMES"
 
     info "安装主题: half-lifeclean..."
@@ -66,7 +123,7 @@ install_themes() {
 
 # ------ 安装插件 ------
 install_plugins() {
-    local CUSTOM_PLUGINS="$HOME/.oh-my-zsh/custom/plugins"
+    local CUSTOM_PLUGINS="$OMZ_CUSTOM/plugins"
     mkdir -p "$CUSTOM_PLUGINS"
 
     # zsh-autosuggestions
@@ -121,6 +178,8 @@ configure_zshrc() {
             if (!has_zsh_home) {
                 print "export ZSH=\"$HOME/.oh-my-zsh\""
             }
+            # 必须显式指定：系统级安装下 $ZSH/custom 归 root，主题插件不在那儿
+            print "ZSH_CUSTOM=\"$HOME/.oh-my-zsh/custom\""
             print "ZSH_THEME=\"half-lifeclean\""
             print ""
             print "plugins=("
@@ -140,6 +199,11 @@ configure_zshrc() {
         }
 
         /^[[:space:]]*ZSH_THEME=/ {
+            skip_config_blank = 1
+            next
+        }
+
+        /^[[:space:]]*(export[[:space:]]+)?ZSH_CUSTOM=/ {
             skip_config_blank = 1
             next
         }
